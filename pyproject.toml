@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "dataant"
+version = "0.1.0"
+description = ""
+authors = ["Yakub Mohammad <yakub.mohammad@pnmac.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+numpy = "^2.2.1"
+pandas = "^2.2.3"
+seaborn = "^0.13.2"
+scikit-learn = "^1.6.0"
+torch = "^2.5.1"
+torchviz = "^0.0.3"
+shiny = "^1.2.1"
+skorch = "^1.0.0"
+jsonpath-nz = "^0.1.2"
+faicons = "^0.2.2"
+shinywidgets = "^0.4.2"
+plotly = "^5.24.1"
+cryptography = "^44.0.0"
+google-generativeai = "^0.8.3"
+grpcio = "1.67.1"
+plotnine = "^0.14.5"
+sqlalchemy = "^2.0.37"
+boto3 = "^1.35.97"
+opencv-python = "^4.10.0.84"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
