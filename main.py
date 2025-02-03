@@ -9,7 +9,6 @@ import signal
 from jsonpath_nz import log, jprint
 from dataant.util import gemini_client_process, TextCipher, extract_json
 from dataant.engine import runEngine
-from jsonpath_nz import log
 import pandas as pd
 #Global variables
 #Signal handler

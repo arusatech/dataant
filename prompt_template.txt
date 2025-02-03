@@ -9,4 +9,4 @@ fields key = list of fields given from the prompt as list to include in the outp
 exclude key = list of fields given from the prompt as list to exclude from the output or default set to None 
 target key = target key of the table or default set to None
 primary key = primary key of the table or default set to None
- ```run analysis for  db_file  exclude ['applicant_race', 'co-applicant'] and target ley as loan_amount```
+ ```run analysis for  db_file  exclude ['applicant_race', 'co-applicant'] and target key as loan_amount```

@@ -1,12 +1,12 @@
 [tool.poetry]
 name = "dataant"
 version = "0.1.0"
-description = ""
-authors = ["Yakub Mohammad <yakub.mohammad@pnmac.com>"]
+description = "Interactive ML Dashboard for Model Training and Monitoring"
+authors = ["Yakub Mohammad <yakub.mohammad@arusatech.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = ">=3.10,<3.14"
 numpy = "^2.2.1"
 pandas = "^2.2.3"
 seaborn = "^0.13.2"
@@ -26,7 +26,10 @@ plotnine = "^0.14.5"
 sqlalchemy = "^2.0.37"
 boto3 = "^1.35.97"
 opencv-python = "^4.10.0.84"
-
+tensorboard = "^2.18.0"
+psutil = "^6.1.1"
+xgboost = "^2.1.3"
+lightgbm = "^4.5.0"
 
 [build-system]
 requires = ["poetry-core"]

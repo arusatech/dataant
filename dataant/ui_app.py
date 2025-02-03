@@ -1,65 +1,105 @@
 import plotly.express as px
-# import seaborn as sns
-# import matplotlib.pyplot as plt
-import pandas as pd
-from dataant.model import ModelTrainer
+import plotly.graph_objects as go
 import numpy as np
-from shinywidgets import render_plotly
-from threading import Timer
-from shiny import Inputs, Outputs, Session, App, ui, render, reactive, req
 import socket
+import psutil
+import time
 import webbrowser
-from jsonpath_nz import log, jprint
+import pandas as pd
+import plotly.graph_objects as go
+from shiny import Inputs, Outputs, Session, App, ui, render, reactive, req
+from shinywidgets import render_plotly, output_widget
+from dataant.model import ModelTrainer
+from threading import Timer
 from faicons import icon_svg
-import plotnine as plt
-from plotnine import (
-    ggplot, aes, geom_line, geom_point, theme_minimal,
-    labs, theme, element_rect, element_line, element_text,
-    scale_x_discrete, geom_abline, geom_path  # Add geom_path here
+from .ui_plot import (
+    plot_score_distribution, plot_production_score_distribution, plot_api_response, plot_default_metric,
+    plot_model_metrics
 )
-from .ui_plots import (
-    plot_roc_curve, plot_precision_recall_curve, plot_score_distribution,
-    plot_production_score_distribution, plot_api_response
-)
+from .model import ModelTrainer
+from datetime import datetime
+from jsonpath_nz import log
 
-# UI Definition
-def find_free_port(start_port=50000, end_port=60000):
-    """Find a free port between start_port and end_port"""
-    for port in range(start_port, end_port + 1):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('', port))
-                s.listen(1)
-                return port
-        except OSError:
-            continue
-    raise IOError(f"No free ports available in range {start_port}-{end_port}")
+def kill_process_on_port(port):
+    """Kill any process using the specified port"""
+    try:
+        for proc in psutil.process_iter():
+            try:
+                # Get connections for each process
+                connections = proc.net_connections()
+                for conn in connections:
+                    if conn.laddr.port == port:
+                        log.info(f"Killing process {proc.pid} using port {port}")
+                        proc.terminate()
+                        time.sleep(0.5)  # Give process time to terminate
+                        if proc.is_running():
+                            proc.kill()  # Force kill if still running
+                        return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except Exception as e:
+        log.error(f"Error killing process on port {port}: {str(e)}")
+        log.traceback(e)
+    return False
+
+def find_free_port(start_port=50000, end_port=60000, retry_count=5):
+    """Find a free port between start_port and end_port with retries"""
+    try:
+        for attempt in range(retry_count):
+            for port in range(start_port, end_port + 1):
+                try:
+                    # Try to bind to the port
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.settimeout(1)
+                        s.bind(('127.0.0.1', port))
+                        s.listen(1)
+                        log.info(f"Found free port: {port}")
+                        return port
+                except OSError:
+                    # Try to kill process if port is in use
+                    kill_process_on_port(port)
+                    continue
+            time.sleep(1)  # Wait before retry
+            log.info(f"Retrying port search, attempt {attempt + 1}/{retry_count}")
+    except Exception as e:
+        log.error(f"Error in find_free_port: {str(e)}")
+        log.traceback(e)
+        raise IOError(f"No free ports available in range {start_port}-{end_port} after {retry_count} attempts")
+
 
 def open_browser(port):
-    webbrowser.open(f'http://localhost:{port}')
+    try:
+        webbrowser.open(f'http://localhost:{port}')
+    except Exception as e:
+        log.error(f"Error in open_browser: {str(e)}")
+        log.traceback(e)
     
 def start_DataAnt(appDict, df):
     '''Create UI'''
     log.info(f"Starting DataAnt with appDict: {appDict} - df: {len(df)}")
-    model_trainer = ModelTrainer()
-       
-    
     plot_tab = ui.nav_panel(
         "Plot ",
         ui.row(
             ui.layout_column_wrap(
                 ui.card(
                     ui.card_header(f"{appDict['info']}"),
-                    ui.output_plot("plot_metric"),
+                    output_widget("plot_metric"),
+                    # ui.output_plot("plot_metric"),
                     ui.input_select( 
-                        "selectField",
-                        "Select Field",
+                        "selectField1",
+                        "Select Field 1",
+                        choices=[str(f) for f in appDict['fields']],
+                    ),
+                    ui.input_select( 
+                        "selectField2",
+                        "Select Field 2",
                         choices=[str(f) for f in appDict['fields']],
                     ),
                 ),
                 fills=True,
                 width="300px",
-                height="1000px"
+                height="1000px",
+                limitsize=False
             ),
         ),
     )
@@ -72,7 +112,8 @@ def start_DataAnt(appDict, df):
                     ui.output_data_frame("summary_statistics"),  # Added DataGrid output here
                 ),
                 fills=True,
-                width="250px"
+                width="250px",
+                limitsize=False
             )
         )
     )
@@ -82,19 +123,29 @@ def start_DataAnt(appDict, df):
             ui.layout_column_wrap(
                 ui.card(
                     ui.card_header("Model Metrics"),
-                    ui.output_plot("training_metric"),
+                    output_widget("training_metric"),
+                    # ui.output_plot("training_metric"),
+                    ui.input_select(
+                        "model",
+                        "Model",
+                        choices=["logistic", "svm", "random_forest", "xgboost"],
+                        selected="logistic"
+                    ),
                     ui.input_select(
                         "metric",
                         "Metric",
-                        choices=["ROC Curve", "Precision-Recall"],
+                        choices=["roc", "pr"],
+                        selected="roc"
                     ),
                 ),
                 ui.card(
                     ui.card_header("Training Scores"),
-                    ui.output_plot("score_dist"),
+                    output_widget("score_dist"),
+                    # ui.output_plot("score_dist"),
                 ),
                 fills=True,
-                width="250px"
+                width="250px",
+                limitsize=False
             ),
         ),
     )
@@ -104,14 +155,17 @@ def start_DataAnt(appDict, df):
             ui.layout_column_wrap(
                 ui.card(
                     ui.card_header("Model Training Time History"),
-                    ui.output_plot("api_response"),
+                    output_widget("api_response"),
+                    # ui.output_plot("api_response"),
                 ),
                 ui.card(
                     ui.card_header("Production Scores"),
-                    ui.output_plot("prod_score_dist"),
+                    output_widget("prod_score_dist"),
+                    # ui.output_plot("prod_score_dist"),
                 ),
                 fills=True,
-                width="250px"
+                width="250px",
+                limitsize=False
             ),
         ),
     )
@@ -145,7 +199,8 @@ def start_DataAnt(appDict, df):
                     ui.output_data_frame("results")
                 ),
                 fills=True,
-                width="400px"  # Increased width for better readability
+                width="400px" , # Increased width for better readability
+                limitsize=False
             )
         ),
     )
@@ -186,7 +241,8 @@ def start_DataAnt(appDict, df):
                     class_="btn-target"  # Bootstrap styling
                 ),
                 width=300,
-                bg="#f8f8f8"
+                bg="#f8f8f8",
+                limitsize=False
             ),
         id="tabs",
         title=[
@@ -200,13 +256,11 @@ def start_DataAnt(appDict, df):
             icon_svg("a",width='20px', height='20px'),
             icon_svg("n",width='20px', height='20px'),
             icon_svg("t",width='20px', height='20px'),
-            " (ai) "
+            " (ai) \u2122 "
         ],
-        footer=ui.card_footer("Yakub Mohammad <yakub@arusatech.com> | AR USA LLC")
+        footer=ui.card_footer("Design and Architect: Mr. Yakub Mohammad  \u00A9 AR USA LLC Team  | arusa@arusatech.com")
     )
 
-    
-    
 
     def server(input: Inputs, output: Outputs, session: Session):
         validation = reactive.Value("")
@@ -236,13 +290,10 @@ def start_DataAnt(appDict, df):
                 
                 X = filtered_df[feature_columns]
                 y = filtered_df[appDict['target']]
-                
-                # Train model (will reuse if already trained with same data)
-                metrics = model_trainer.train_model(X, y)
-                return metrics
-                
+                return(X, y)
             except Exception as e:
                 log.error(f"Error in get_trained_model: {str(e)}")
+                log.traceback(e)
                 raise
 
         @reactive.Effect
@@ -286,168 +337,6 @@ def start_DataAnt(appDict, df):
             return f"Count: {len(filtered_df)} / {len(df)}"
 
         @output
-        @render.plot
-        @reactive.event(input.selectField, input.amount_range)
-        def plot_metric():
-            """Create plot with selected field against target key using plotnine"""
-            try:
-                index = appDict['target']
-                # Get filtered data
-                filtered_df = get_filtered_df()
-                
-                # Get selected field
-                selected_field = input.selectField()
-                
-                #For a given selected field, filter all the invalid fields except target key and drop the row that has NaN or None or empty values
-                
-                # Filter all invalid fields except target key and selected field
-                invalid_fields = [
-                    f for f in appDict['fields'] 
-                    if f != selected_field and f != appDict['target']
-                ]
-                filtered_df = filtered_df.drop(columns=invalid_fields)
-                filtered_df = filtered_df.dropna()
-                # Additional cleaning for empty strings or whitespace
-                if filtered_df[selected_field].dtype == object:  # For string columns
-                    filtered_df = filtered_df[
-                        filtered_df[selected_field].str.strip().astype(bool)
-                    ]
-                
-                log.info(f"Cleaned data shape: {filtered_df.shape}")
-                log.info(f"Remaining columns: {filtered_df.columns.tolist()}")
-                
-                
-                # Reset index and prepare data for plotting
-                plot_df = filtered_df.reset_index()
-                
-                # Ensure column names are strings
-                plot_df.columns = plot_df.columns.astype(str)
-                
-               # Get value counts for the selected field
-                value_counts = plot_df[selected_field].value_counts()
-                
-                # Create labels with counts
-                x_labels = [f"{val} ({count})" for val, count in value_counts.items()]
-                
-                # Convert selected field to string type if it's not already
-                plot_df[selected_field] = plot_df[selected_field].astype(str)
-                
-                # Sort the data to ensure consistent ordering
-                plot_df = plot_df.sort_values(by=selected_field)
-                 # Check if the field is numeric and has more than 100 unique values
-                if (pd.api.types.is_numeric_dtype(plot_df[selected_field]) and 
-                    len(plot_df[selected_field].unique()) > 100):
-                    
-                    # Create bins using round numbers
-                    min_val = plot_df[selected_field].min()
-                    max_val = plot_df[selected_field].max()
-                    
-                    # Create bin edges with step of 1
-                    bin_edges = np.arange(np.floor(min_val), np.ceil(max_val) + 1, 1)
-                    
-                    # Create bin labels
-                    bin_labels = [f"{bin_edges[i]:.0f}-{bin_edges[i+1]:.0f}" 
-                                for i in range(len(bin_edges)-1)]
-                    
-                    # Add binned column
-                    plot_df['binned'] = pd.cut(plot_df[selected_field], 
-                                             bins=bin_edges, 
-                                             labels=bin_labels, 
-                                             include_lowest=True)
-                    
-                    # Get value counts for binned data
-                    value_counts = plot_df['binned'].value_counts().sort_index()
-                    
-                    # Create labels with counts
-                    x_labels = [f"{val} ({count})" for val, count in value_counts.items()]
-                    
-                    # Use binned column for plotting
-                    plot_field = 'binned'
-                else:
-                    # Use original field if not numeric or less than 100 unique values
-                    value_counts = plot_df[selected_field].value_counts().sort_index()
-                    x_labels = [f"{val} ({count})" for val, count in value_counts.items()]
-                    plot_field = selected_field
-
-                plot = (
-                    ggplot(data=plot_df) +
-                    aes(x=str(plot_field), y=str(index)) +
-                    geom_line(color='blue', alpha=0.7) +
-                    geom_point(color='blue', alpha=0.5, size=2) +
-                    theme_minimal() +
-                    labs(
-                        title=f"{selected_field}",
-                        x=str(selected_field),
-                        y=str(index)
-                    ) +
-                    theme(
-                        figure_size=(10, 6),
-                        plot_background=element_rect(fill='white'),
-                        panel_grid_major=element_line(color='lightgray'),
-                        panel_grid_minor=element_line(color='lightgray'),
-                        axis_text_x=element_text(angle=45, hjust=1)
-                    ) +
-                    scale_x_discrete(limits=value_counts.index.tolist(), labels=x_labels)
-                )
-                
-                return plot
-                
-            except Exception as e:
-                log.error(f"Error creating plot: {str(e)}")
-                # return plt.figure()  #
-                return ggplot()  # Return empty plot on error
-
-        @output
-        @render.plot
-        @reactive.event(input.metric)
-        def training_metric():
-            """Create ROC or Precision-Recall curve using plotnine"""
-            try:
-                metrics = get_trained_model()
-                if input.metric() == "ROC Curve":
-                    log.info("ROC Curve selected")
-                    return plot_roc_curve(metrics)
-                else:
-                    log.info("Precision-Recall Curve selected")
-                    return plot_precision_recall_curve(metrics)
-                    
-            except Exception as e:
-                log.error(f"Error creating metric plot: {str(e)}")
-                return ggplot()  # Return empty plot on error
-                    
-        @output
-        @render.plot
-        @reactive.event(input.amount_range)
-        def score_dist():
-            """Display the distribution of model scores for the filtered dataset"""
-            try:
-                metrics = get_trained_model()
-                # filtered_df = get_filtered_df()
-                # log.info(f"Creating score distribution plot for {len(filtered_df)} entries")
-                
-                # # Get numeric feature columns
-                # feature_columns = [
-                #     f for f in appDict['fields'] 
-                #     if f != appDict['target'] and filtered_df[f].dtype != 'object'
-                # ]
-                
-                # # Drop rows with missing values
-                # filtered_df = filtered_df.dropna(subset=feature_columns + [appDict['target']])
-                
-                # X = filtered_df[feature_columns]
-                # y = filtered_df[appDict['target']]
-                
-                # # Initialize and train model
-                # model_trainer = ModelTrainer()
-                # metrics = model_trainer.train_model(X, y)
-                
-                return plot_score_distribution(metrics)
-                    
-            except Exception as e:
-                log.error(f"Error creating score distribution plot: {str(e)}")
-                return ggplot()
-        
-        @output
         @render.text
         @reactive.event(input.amount_range)
         def range_value():
@@ -486,50 +375,6 @@ def start_DataAnt(appDict, df):
             std = filtered_df[f'{appDict["slider_name"]}'].std()
             return f"${std:,.2f}"
         
-        @output
-        @render.plot
-        def prod_score_dist():
-            """Display the distribution of model scores in production"""
-            try:
-                metrics = get_trained_model()  # Reuse trained model
-                filtered_df = get_filtered_df()
-                
-                # Get numeric feature columns
-                feature_columns = [
-                    f for f in appDict['fields'] 
-                    if f != appDict['target'] and filtered_df[f].dtype != 'object'
-                ]
-                
-                # Drop rows with missing values
-                filtered_df = filtered_df.dropna(subset=feature_columns + [appDict['target']])
-                
-                X = filtered_df[feature_columns]
-                prod_scores = model_trainer.predict(X)
-                
-                return plot_production_score_distribution(prod_scores)
-               
-                
-            except Exception as e:
-                log.error(f"Error creating production score distribution plot: {str(e)}")
-                return ggplot()
-        
-        @output
-        @render.plot
-        def api_response():
-            """Display API response time trend"""
-            try:
-                # Get training history from model trainer
-                history = model_trainer.training_history
-                if not history:
-                    log.info("No training history available yet")
-                    return ggplot()  # Return empty plot if no history
-               
-                return plot_api_response(history)
-                
-            except Exception as e:
-                log.error(f"Error creating API response plot: {str(e)}")
-                return ggplot()
-
         @output
         @render.ui
         def review_card():
@@ -609,26 +454,252 @@ def start_DataAnt(appDict, df):
                     if input_df[f].dtype != 'object'
                 ]
                 
-                # Ensure model is trained
-                metrics = get_trained_model()
+                X, y = get_trained_model()
+                
+                # Validate data
+                if X is None or y is None:
+                    log.error("X or y is None - check get_trained_model()")
+                    return pd.DataFrame({'Error': ['Model data not available']})
+                    
+                model_trainer = ModelTrainer(
+                    random_state=42, 
+                    model_name=input.model(), 
+                    test_size=0.2, 
+                    X=X, 
+                    y=y
+                )
+                
+                # Train model if not already trained
+                model_trainer.train_model()
                 
                 # Get prediction
-                prediction_score = model_trainer.predict(input_df[numeric_features])
+                prediction_data = model_trainer.predict(input_df[numeric_features])
                 
-                # Create results DataFrame
-                results_df = pd.DataFrame({
-                    'Field': list(input_values.keys()) + ['Prediction Score'],
-                    'Value': list(input_values.values()) +  [f"{prediction_score[0]:.3f}"]
+                # Format results
+                results = []
+                # Add input values
+                for field, value in input_values.items():
+                    results.append({
+                        'Field': field,
+                        'Value': value
+                    })
+                
+                # Add prediction scores for each class
+                for i, class_label in enumerate(prediction_data['classes']):
+                    score = prediction_data['scores'][0][i]
+                    results.append({
+                        'Field': f'Prediction Score (Class {class_label})',
+                        'Value': f'{score:.3f}'
+                    })
+                
+                # Add metadata
+                results.append({
+                    'Field': 'Model',
+                    'Value': prediction_data['metadata']['model_name']
                 })
-                return results_df
+                results.append({
+                    'Field': 'Prediction Time',
+                    'Value': datetime.fromtimestamp(
+                        prediction_data['metadata']['prediction_time']
+                    ).strftime('%Y-%m-%d %H:%M:%S')
+                })
+                # jprint(results)
+                return pd.DataFrame(results)
                 
             except Exception as e:
                 log.error(f"Error generating results: {str(e)}")
+                log.traceback(e)
                 return pd.DataFrame({'Error': [str(e)]})
 
-    app = App(app_ui, server)
-    port = find_free_port()
-    Timer(1.5, lambda: open_browser(port)).start()
-    app.run(port=port)
+
+        @output
+        @render_plotly
+        @reactive.event(input.selectField1, input.selectField2, input.amount_range)
+        def plot_metric():
+            try:
+                selected_field1 = input.selectField1()
+                selected_field2 = input.selectField2()
+                plot_df = get_filtered_df()
+                index = appDict['target']
+                return(plot_default_metric(selected_field1, selected_field2, plot_df, index))
+            except Exception as e:
+                log.error(f"Error in plot_metric: {str(e)}")
+                return go.Figure()
+            
+        @output
+        @render_plotly
+        @reactive.event(input.metric)
+        def training_metric():
+            try:
+                X, y = get_trained_model()
+                
+                # Validate data before creating model
+                if X is None or y is None:
+                    log.error("X or y is None - check get_trained_model()")
+                    return go.Figure()
+                    
+                if len(X) == 0 or len(y) == 0:
+                    log.error("Empty X or y data - check get_trained_model()")
+                    return go.Figure()
+                    
+                log.info(f"Training with X shape: {X.shape}, y shape: {y.shape}")
+                
+                model_trainer = ModelTrainer(
+                    random_state=42, 
+                    model_name=input.model(), 
+                    test_size=0.2, 
+                    X=X, 
+                    y=y
+                )
+                model_data = model_trainer.train_model()
+                return plot_model_metrics(model_data, metric_type=input.metric().lower())
+                    
+            except Exception as e:
+                log.error(f"Error creating metric plot: {str(e)}")
+                log.traceback(e)  # Add traceback for more detail
+                return go.Figure()
+                    
+        @output
+        @render_plotly
+        @reactive.event(input.amount_range)
+        def score_dist():
+            """Display the distribution of model scores for the filtered dataset"""
+            try:
+                X, y = get_trained_model()
+                
+                # Validate data
+                if X is None or y is None:
+                    log.error("X or y is None - check get_trained_model()")
+                    return go.Figure()
+                    
+                model_trainer = ModelTrainer(
+                    random_state=42, 
+                    model_name=input.model(), 
+                    test_size=0.2, 
+                    X=X, 
+                    y=y
+                )
+                
+                model_data = model_trainer.train_model()
+                return plot_score_distribution(model_data)
+                    
+            except Exception as e:
+                log.error(f"Error creating score distribution plot: {str(e)}")
+                return go.Figure()
+        
+        @output
+        @render_plotly
+        def prod_score_dist():
+            """Display the distribution of model scores in production"""
+            try:
+                X, y = get_trained_model()
+                
+                # Validate data
+                if X is None or y is None:
+                    log.error("X or y is None - check get_trained_model()")
+                    return go.Figure()
+                
+                log.info(f"Data shapes - X: {X.shape}, y: {y.shape}")
+                
+                model_trainer = ModelTrainer(
+                    random_state=42, 
+                    model_name=input.model(), 
+                    test_size=0.2, 
+                    X=X, 
+                    y=y
+                )
+                
+                # Get training data predictions
+                model_data = model_trainer.train_model()
+                
+                # Get production data (using last 20% of filtered data as mock production data)
+                prod_size = int(len(X) * 0.2)
+                X_prod = X.tail(prod_size)
+                
+                # Get production predictions
+                prod_predictions = model_trainer.predict(X_prod)
+                
+                # Log the data structures
+                log.info("Training data keys: " + str(model_data.keys()))
+                log.info("Production data keys: " + str(prod_predictions.keys()))
+                
+                combined_data = {
+                    'training_data': {
+                        'y_scores_test': model_data['y_scores_test'],
+                        'y_test': model_data['y_test']
+                    },
+                    'production_data': {
+                        'y_scores': prod_predictions['scores']  # Changed from 'scores' to match predict output
+                    },
+                    'metadata': {
+                        'training_samples': len(X),
+                        'production_samples': len(X_prod),
+                        'model_name': input.model(),
+                        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                }
+                
+                return plot_production_score_distribution(combined_data)
+               
+            except Exception as e:
+                log.error(f"Error creating production score distribution plot: {str(e)}")
+                log.traceback(e)
+                return go.Figure()
+            
+        @output
+        @render_plotly
+        def api_response():
+            """Display API response time trend"""
+            try:
+                X, y = get_trained_model()
+                
+                # Validate data
+                if X is None or y is None:
+                    log.error("X or y is None - check get_trained_model()")
+                    return go.Figure()
+                    
+                model_trainer = ModelTrainer(
+                    random_state=42, 
+                    model_name=input.model(), 
+                    test_size=0.2, 
+                    X=X, 
+                    y=y
+                )
+                
+                model_data = model_trainer.train_model()
+                # jprint(model_data)
+                # Get training history from model trainer
+                if not model_data['training_history']:
+                    log.info("No training history available yet")
+                    return go.Figure()  # Return empty plot if no history
+               
+                return plot_api_response(model_data)
+                
+            except Exception as e:
+                log.error(f"Error creating API response plot: {str(e)}")
+                return go.Figure()
+
+        
+
+    try:
+        # Try to find a free port multiple times
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                port = find_free_port()
+                log.info(f"Starting DataAnt on port {port}")
+                app = App(app_ui, server)
+                Timer(1.5, lambda: open_browser(port)).start()
+                app.run(port=port)
+                break
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    raise
+                log.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                time.sleep(2)
+    except Exception as e:
+        log.error(f"Error starting DataAnt: {str(e)}")
+        log.traceback(e)
+        raise
 
                                     
