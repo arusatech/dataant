@@ -77,6 +77,12 @@ def open_browser(port):
 def start_DataAnt(appDict, df):
     '''Create UI'''
     log.info(f"Starting DataAnt with appDict: {appDict} - df: {len(df)}")
+    
+    # Get default target for dropdown
+    default_target = appDict.get('target')
+    if not default_target or default_target == 'None':
+        default_target = appDict['fields'][-1] if appDict['fields'] else None
+    
     plot_tab = ui.nav_panel(
         "Plot ",
         ui.row(
@@ -89,11 +95,19 @@ def start_DataAnt(appDict, df):
                         "selectField1",
                         "Select Field 1",
                         choices=[str(f) for f in appDict['fields']],
+                        selected=appDict['fields'][0] if appDict['fields'] else None,
                     ),
                     ui.input_select( 
                         "selectField2",
                         "Select Field 2",
                         choices=[str(f) for f in appDict['fields']],
+                        selected=appDict['fields'][1] if len(appDict['fields']) > 1 else None,
+                    ),
+                    ui.input_select( 
+                        "selectTarget",
+                        "Select Target",
+                        choices=[str(f) for f in appDict['fields']],
+                        selected=str(default_target) if default_target else None,
                     ),
                 ),
                 fills=True,
@@ -265,6 +279,23 @@ def start_DataAnt(appDict, df):
     def server(input: Inputs, output: Outputs, session: Session):
         validation = reactive.Value("")
         
+        def get_target_column():
+            """Helper function to get target column safely"""
+            target_col = appDict.get('target', None)
+            if not target_col or target_col == 'None':
+                # Try to find a suitable target column (prefer last column)
+                if len(df.columns) > 0:
+                    target_col = df.columns[-1]
+                    log.info(f"No target specified, using '{target_col}' as default target")
+                else:
+                    raise ValueError("No target column available and dataframe is empty")
+            
+            # Ensure target column exists
+            if target_col not in df.columns:
+                raise ValueError(f"Target column '{target_col}' not found in dataframe")
+            
+            return target_col
+        
         @reactive.Calc
         def get_filtered_df():
             min_val, max_val = input.amount_range()
@@ -279,17 +310,34 @@ def start_DataAnt(appDict, df):
             try:
                 filtered_df = get_filtered_df()
                 
-                # Get numeric feature columns
+                # Get target column - use default if None
+                target_col = appDict.get('target', None)
+                if not target_col or target_col == 'None':
+                    # Try to find a suitable target column (prefer last column, or first numeric)
+                    if len(filtered_df.columns) > 0:
+                        target_col = filtered_df.columns[-1]
+                        log.info(f"No target specified, using '{target_col}' as default target")
+                    else:
+                        raise ValueError("No target column available and dataframe is empty")
+                
+                # Ensure target column exists
+                if target_col not in filtered_df.columns:
+                    raise ValueError(f"Target column '{target_col}' not found in dataframe")
+                
+                # Get target column
+                target_col = get_target_column()
+                
+                # Get numeric feature columns (exclude target)
                 feature_columns = [
                     f for f in appDict['fields'] 
-                    if f != appDict['target'] and filtered_df[f].dtype != 'object'
+                    if f != target_col and f in filtered_df.columns and filtered_df[f].dtype != 'object'
                 ]
                 
                 # Drop rows with missing values
-                filtered_df = filtered_df.dropna(subset=feature_columns + [appDict['target']])
+                filtered_df = filtered_df.dropna(subset=feature_columns + [target_col])
                 
                 X = filtered_df[feature_columns]
-                y = filtered_df[appDict['target']]
+                y = filtered_df[target_col]
                 return(X, y)
             except Exception as e:
                 log.error(f"Error in get_trained_model: {str(e)}")
@@ -380,10 +428,13 @@ def start_DataAnt(appDict, df):
         def review_card():
             """Create dynamic input fields for annotation"""
             try:
+                # Get target column
+                target_col = get_target_column()
+                
                 # Get feature columns (excluding target field)
                 feature_columns = [
                     f for f in appDict['fields'] 
-                    if f != appDict['target']
+                    if f != target_col
                 ]
                 
                 # Create input fields based on data types
@@ -429,10 +480,13 @@ def start_DataAnt(appDict, df):
         def results():
             """Generate prediction results from input values"""
             try:
+                # Get target column
+                target_col = get_target_column()
+                
                 # Get feature columns
                 feature_columns = [
                     f for f in appDict['fields'] 
-                    if f != appDict['target']
+                    if f != target_col
                 ]
                 
                 # Collect input values into a dictionary
@@ -514,16 +568,29 @@ def start_DataAnt(appDict, df):
 
         @output
         @render_plotly
-        @reactive.event(input.selectField1, input.selectField2, input.amount_range)
+        @reactive.event(input.selectField1, input.selectField2, input.selectTarget, input.amount_range)
         def plot_metric():
             try:
                 selected_field1 = input.selectField1()
                 selected_field2 = input.selectField2()
+                selected_target = input.selectTarget()
                 plot_df = get_filtered_df()
-                index = appDict['target']
-                return(plot_default_metric(selected_field1, selected_field2, plot_df, index))
+                
+                # Validate that all selected fields exist in the dataframe
+                if selected_field1 not in plot_df.columns:
+                    log.error(f"Field 1 '{selected_field1}' not found in dataframe")
+                    return go.Figure()
+                if selected_field2 not in plot_df.columns:
+                    log.error(f"Field 2 '{selected_field2}' not found in dataframe")
+                    return go.Figure()
+                if selected_target not in plot_df.columns:
+                    log.error(f"Target '{selected_target}' not found in dataframe")
+                    return go.Figure()
+                
+                return(plot_default_metric(selected_field1, selected_field2, plot_df, selected_target))
             except Exception as e:
                 log.error(f"Error in plot_metric: {str(e)}")
+                log.traceback(e)
                 return go.Figure()
             
         @output
@@ -541,8 +608,28 @@ def start_DataAnt(appDict, df):
                 if len(X) == 0 or len(y) == 0:
                     log.error("Empty X or y data - check get_trained_model()")
                     return go.Figure()
+                
+                # Check if target has multiple classes
+                unique_classes = pd.Series(y).nunique()
+                if unique_classes < 2:
+                    fig = go.Figure()
+                    fig.add_annotation(
+                        text=f"Classification requires at least 2 classes.<br>Current filtered data contains only {unique_classes} class(es).<br>Please adjust filters to include samples from multiple classes.",
+                        xref="paper", yref="paper",
+                        x=0.5, y=0.5, showarrow=False,
+                        font=dict(size=14, color="red")
+                    )
+                    metric_name = input.metric().upper()
+                    fig.update_layout(
+                        width=700,
+                        height=500,
+                        title=f"{metric_name} Curves (Training vs Test) - Insufficient Classes",
+                        xaxis=dict(title='False Positive Rate' if metric_name == 'ROC' else 'Recall', range=[0, 1]),
+                        yaxis=dict(title='True Positive Rate' if metric_name == 'ROC' else 'Precision', range=[0, 1])
+                    )
+                    return fig
                     
-                log.info(f"Training with X shape: {X.shape}, y shape: {y.shape}")
+                log.info(f"Training with X shape: {X.shape}, y shape: {y.shape}, classes: {unique_classes}")
                 
                 model_trainer = ModelTrainer(
                     random_state=42, 
@@ -554,6 +641,26 @@ def start_DataAnt(appDict, df):
                 model_data = model_trainer.train_model()
                 return plot_model_metrics(model_data, metric_type=input.metric().lower())
                     
+            except ValueError as e:
+                # Handle single-class or insufficient data errors gracefully
+                error_msg = str(e)
+                log.warning(f"Model training error: {error_msg}")
+                fig = go.Figure()
+                fig.add_annotation(
+                    text=error_msg.replace('\n', '<br>'),
+                    xref="paper", yref="paper",
+                    x=0.5, y=0.5, showarrow=False,
+                    font=dict(size=12, color="red")
+                )
+                metric_name = input.metric().upper()
+                fig.update_layout(
+                    width=700,
+                    height=500,
+                    title=f"{metric_name} Curves (Training vs Test) - Error",
+                    xaxis=dict(title='False Positive Rate' if metric_name == 'ROC' else 'Recall', range=[0, 1]),
+                    yaxis=dict(title='True Positive Rate' if metric_name == 'ROC' else 'Precision', range=[0, 1])
+                )
+                return fig
             except Exception as e:
                 log.error(f"Error creating metric plot: {str(e)}")
                 log.traceback(e)  # Add traceback for more detail
@@ -571,6 +678,23 @@ def start_DataAnt(appDict, df):
                 if X is None or y is None:
                     log.error("X or y is None - check get_trained_model()")
                     return go.Figure()
+                
+                # Check if target has multiple classes
+                unique_classes = pd.Series(y).nunique()
+                if unique_classes < 2:
+                    fig = go.Figure()
+                    fig.add_annotation(
+                        text=f"Classification requires at least 2 classes.<br>Current filtered data contains only {unique_classes} class(es).<br>Please adjust filters to include samples from multiple classes.",
+                        xref="paper", yref="paper",
+                        x=0.5, y=0.5, showarrow=False,
+                        font=dict(size=14, color="red")
+                    )
+                    fig.update_layout(
+                        width=700,
+                        height=500,
+                        title="Score Distribution - Insufficient Classes"
+                    )
+                    return fig
                     
                 model_trainer = ModelTrainer(
                     random_state=42, 
@@ -583,6 +707,23 @@ def start_DataAnt(appDict, df):
                 model_data = model_trainer.train_model()
                 return plot_score_distribution(model_data)
                     
+            except ValueError as e:
+                # Handle single-class or insufficient data errors gracefully
+                error_msg = str(e)
+                log.warning(f"Model training error: {error_msg}")
+                fig = go.Figure()
+                fig.add_annotation(
+                    text=error_msg.replace('\n', '<br>'),
+                    xref="paper", yref="paper",
+                    x=0.5, y=0.5, showarrow=False,
+                    font=dict(size=12, color="red")
+                )
+                fig.update_layout(
+                    width=700,
+                    height=500,
+                    title="Score Distribution - Error"
+                )
+                return fig
             except Exception as e:
                 log.error(f"Error creating score distribution plot: {str(e)}")
                 return go.Figure()

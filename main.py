@@ -9,6 +9,7 @@ import signal
 from jsonpath_nz import log, jprint
 from dataant.util import gemini_client_process, TextCipher, extract_json
 from dataant.engine import runEngine
+from dataant.prompt_parser import parse_prompt
 import pandas as pd
 #Global variables
 #Signal handler
@@ -66,11 +67,11 @@ def main(argv):
             log.info(f"Creating a new config.json file at {os.path.join(os.getcwd(), 'config.json')}")  
             #create a new config.json file
             with open('config.json', 'w') as file:
-                json.dump({'api_key': 'None', 'db_file': 'None'}, file)
+                json.dump({'db_file': 'None'}, file)
             return(f'''
                     --- To Start the bot ---
-                    provide prompt: 'set api_key <YOUR GOOGLE_API_KEY> '
                     Provide prompt: 'set db_file <YOUR DB_FILE_PATH> '
+                    (Optional) provide prompt: 'set api_key <YOUR GOOGLE_API_KEY> ' for Gemini AI fallback
                     ''',False)
         
         #Prompt starts with 'set' and follows by key and value
@@ -105,40 +106,46 @@ def main(argv):
             return(f"Config updated successfully with {key} : {value}",True)
 
         # Check if required config values exist
-        if not config.get('api_key'):
-            return "Provide prompt: 'set api_key <YOUR GOOGLE_API_KEY>'", False
-
-        if not config.get('db_file'):
+        if not config.get('db_file') or config.get('db_file') == 'None':
             return "Provide prompt: 'set db_file <YOUR DB_FILE_PATH>'", False
 
-
-        #Generative AI prompts
-        api_key = TextCipher().decrypt(config['api_key'], public_key)
-        if not api_key:
-            return(f"Provide prompt: 'set api_key <YOUR GOOGLE_API_KEY>' ",False)
-        prompt = f'''{GLB_PROMPT}
-        ```{prompt}```
-        '''
-        prompt_response = gemini_client_process(prompt, api_key)
-        # fmt_print(prompt_response)
-        if prompt_response['metadata']['status'] == 'error':
-            return(f'''Failed to get response from Gemini [ {prompt_response['response']['error']} ], 
-                    Try again by providing valid api_key (set api_key <YOUR GOOGLE_API_KEY>)''',False)
-        else:
-            json_data = extract_json(prompt_response['response']['content'])
-            count= 0
-            while not json_data:
-                prompt_response = gemini_client_process(prompt, api_key)
-                json_data = extract_json(prompt_response['response']['content'])
-                count += 1
-                if count > 3:
-                    return(f"Failed to extract JSON from the prompt response after 3 attempts",False)
-                else:
-                    log.info(f"Retrying {count} time again... ")
-
-            jprint(json_data)
-            msg = runEngine(config, json_data)
-            return(msg, True)
+        # Parse prompt using spaCy-based parser (no API key required)
+        log.info(f"Parsing prompt using spaCy parser: {prompt}")
+        json_data = parse_prompt(prompt)
+        
+        # If parsing failed or no action detected, try using Gemini as fallback (if API key available)
+        api_key_value = config.get('api_key')
+        use_gemini_fallback = False
+        
+        if not json_data.get('action') and api_key_value and api_key_value != 'None':
+            try:
+                public_key = f"{getpass.getuser()}@{platform.system()}"
+                api_key = TextCipher().decrypt(api_key_value, public_key)
+                if api_key:
+                    log.info("No action detected, trying Gemini as fallback...")
+                    use_gemini_fallback = True
+                    prompt_with_instructions = f'''{GLB_PROMPT}
+                    ```{prompt}```
+                    '''
+                    prompt_response = gemini_client_process(prompt_with_instructions, api_key)
+                    if prompt_response['metadata']['status'] == 'success':
+                        json_data = extract_json(prompt_response['response']['content'])
+                        if json_data:
+                            log.info("Successfully parsed using Gemini fallback")
+            except Exception as e:
+                log.warning(f"Gemini fallback failed: {e}, continuing with spaCy parser result")
+        
+        # Validate parsed data
+        if not json_data:
+            return("Failed to parse prompt. Please try rephrasing your request.", False)
+        
+        # Set default action if none found
+        if not json_data.get('action'):
+            json_data['action'] = 'analysis'  # Default to analysis
+        
+        jprint(json_data)
+        msg = runEngine(config, json_data)
+        return(msg, True)
         
     except Exception as e:
         log.traceback(e)

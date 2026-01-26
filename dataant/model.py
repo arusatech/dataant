@@ -128,12 +128,37 @@ class ModelTrainer:
                 log.info("Using cached model results - no retraining needed")
                 return self.cached_results
             
-            log.info(f"Training model with shape {current_shape}")
+            # Check if target has at least 2 classes (required for classification)
+            unique_classes = pd.Series(self.y).nunique()
+            if unique_classes < 2:
+                unique_values = pd.Series(self.y).unique()
+                error_msg = f"Classification requires at least 2 classes, but filtered data contains only {unique_classes} class(es): {unique_values}. Please adjust filters to include samples from multiple classes."
+                log.warning(error_msg)
+                raise ValueError(error_msg)
+            
+            log.info(f"Training model with shape {current_shape}, target has {unique_classes} classes")
             start_time = time.time()
             
             X_train, X_test, y_train, y_test = train_test_split(
                 self.X, self.y, test_size=self.test_size, random_state=self.random_state
             )
+            
+            # Verify train/test splits have multiple classes
+            train_classes = pd.Series(y_train).nunique()
+            test_classes = pd.Series(y_test).nunique()
+            
+            if train_classes < 2 or test_classes < 2:
+                log.warning(f"Training set has {train_classes} class(es), test set has {test_classes} class(es). Using stratified split.")
+                # Try stratified split to ensure both sets have all classes
+                try:
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        self.X, self.y, test_size=self.test_size, random_state=self.random_state, stratify=self.y
+                    )
+                    train_classes = pd.Series(y_train).nunique()
+                    test_classes = pd.Series(y_test).nunique()
+                    log.info(f"After stratified split: train has {train_classes} classes, test has {test_classes} classes")
+                except Exception as e:
+                    log.warning(f"Stratified split failed: {e}. Using regular split.")
             
             # Scale the features
             X_train_scaled = self.scaler.fit_transform(X_train)

@@ -166,16 +166,68 @@ class ActionHandler:
         }
         
         # Get unique fields to process
-        prompt_fields = set(self.prompt_dict.get('fields', []))
+        fields_list = self.prompt_dict.get('fields', [])
+        # Handle None, 'None' string, or empty list
+        if fields_list is None or fields_list == 'None' or (isinstance(fields_list, list) and len(fields_list) == 0):
+            fields_list = []
+        # Ensure it's a list before converting to set
+        if not isinstance(fields_list, list):
+            fields_list = [fields_list] if fields_list else []
+        prompt_fields = set(fields_list) if fields_list else set()
         valid_fields = []
         unique_values = []
         uniqueFields = []#
         
+        # Determine target key
         target_key = self.prompt_dict.get('target', None)
+        if target_key == 'None':
+            target_key = None
+        
         if not target_key:
-            log.info(f"target key not found... taking last field as target/target key")
-            target_key = prompt_fields[-1]
-        # Process each field
+            # Prefer categorical/binary columns for classification tasks
+            # Look for columns named 'target', 'label', 'class', or binary columns
+            preferred_targets = ['target', 'label', 'class', 'y', 'outcome']
+            found_target = None
+            
+            # First, check for preferred target names in all columns (not just prompt_fields)
+            for col in df.columns:
+                if col.lower() in [pt.lower() for pt in preferred_targets]:
+                    found_target = col
+                    log.info(f"Found preferred target column: '{col}'")
+                    break
+            
+            # If not found, look for binary/categorical columns (low cardinality)
+            if not found_target:
+                # Check in prompt_fields first if available
+                search_cols = list(prompt_fields) if prompt_fields else df.columns
+                for col in search_cols:
+                    if col in df.columns:
+                        nunique = df[col].nunique()
+                        # Prefer columns with 2 unique values (binary classification)
+                        if nunique == 2:
+                            found_target = col
+                            log.info(f"Found binary target column: '{col}' with {nunique} unique values")
+                            break
+                        # Also consider categorical columns with low cardinality
+                        elif (df[col].dtype == 'object' or nunique <= 10) and not found_target:
+                            found_target = col
+                            log.info(f"Found categorical target column: '{col}' with {nunique} unique values")
+            
+            if found_target:
+                target_key = found_target
+                log.info(f"target key not found... using categorical column '{target_key}' as target")
+            elif prompt_fields:
+                log.info(f"target key not found... taking last field as target/target key")
+                # Convert set to sorted list to get consistent last element
+                target_key = sorted(list(prompt_fields))[-1]
+            elif len(df.columns) > 0:
+                # If no fields specified, use the last column as target
+                log.info(f"target key not found... taking last column '{df.columns[-1]}' as target/target key")
+                target_key = df.columns[-1]
+        
+        # Update retDict with the determined target (always set it)
+        retDict['target'] = target_key
+        log.info(f"Target column set to: {target_key}")
         for field in prompt_fields:
             # log.info(f"Processing field: {field}")
             # Skip if field doesn't exist in DataFrame
@@ -280,10 +332,19 @@ def runEngine(config_data, prompt_data):
             
         exclude_list = []
         field_list = []
-        if prompt_data.get('fields', None) is not None:
-            field_list += prompt_data['fields']
-        if prompt_data.get('exclude', None) is not None:
-            exclude_list += prompt_data['exclude']
+        fields_value = prompt_data.get('fields', None)
+        if fields_value is not None and fields_value != 'None':
+            if isinstance(fields_value, list):
+                field_list += fields_value
+            elif isinstance(fields_value, str) and fields_value != 'None':
+                field_list.append(fields_value)
+        
+        exclude_value = prompt_data.get('exclude', None)
+        if exclude_value is not None and exclude_value != 'None':
+            if isinstance(exclude_value, list):
+                exclude_list += exclude_value
+            elif isinstance(exclude_value, str) and exclude_value != 'None':
+                exclude_list.append(exclude_value)
         if prompt_data.get('target', None) is not None:
             target_key = prompt_data['target']
         if prompt_data.get('primary', None) is not None:
